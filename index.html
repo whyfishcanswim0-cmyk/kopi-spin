@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Kopi Breyk Spin</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,700;12..96,800&family=Figtree:wght@400;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <div class="brand"><span>Kopi Breyk</span><button id="logout" hidden>Log out</button></div>
+
+  <section class="screen" id="s-auth" hidden>
+    <h1>Spin for a treat.</h1>
+    <p>Log in or make a username and 4-digit PIN. No email needed.</p>
+    <div class="tabs"><button class="on" data-mode="login">Log in</button><button data-mode="signup">Sign up</button></div>
+    <label for="u">Username</label>
+    <input id="u" autocomplete="username" autocapitalize="none" autocorrect="off" maxlength="20">
+    <label for="p">4-digit PIN</label>
+    <input id="p" class="pin" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="current-password">
+    <p class="err" id="auth-err"></p>
+    <button class="btn" id="auth-go">Log in</button>
+  </section>
+
+  <section class="screen" id="s-code" hidden>
+    <h2>Check in</h2>
+    <p>Hi <b id="who1"></b>! Ask the cashier for today’s Cafe Daily Code.</p>
+    <label for="code">Cafe Daily Code</label>
+    <input id="code" class="pin" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off">
+    <p class="err" id="code-err"></p>
+    <button class="btn" id="code-go">Check in</button>
+    <p class="small" style="margin-top:14px" id="visits1"></p>
+  </section>
+
+  <section class="screen" id="s-wheel" hidden>
+    <h2>Your spin for today</h2>
+    <p>One spin per day. Good luck!</p>
+    <div class="stage"><div class="pointer"></div><canvas id="wheel" width="720" height="720"></canvas><div class="hub"></div></div>
+    <button class="btn" id="spin-go">Spin the wheel</button>
+  </section>
+
+  <section class="screen" id="s-prize" hidden>
+    <div class="ticket" id="ticket">
+      <p id="pz-top"></p>
+      <div class="prize" id="pz-name"></div>
+      <p id="pz-sub"></p>
+      <div id="pz-live">
+        <div class="clock"><b id="clk">--:--:--</b><span id="clk-date"></span><div class="live"></div></div>
+        <p class="small" style="margin-top:10px">Cashier: check that the clock is ticking, then tap below.</p>
+      </div>
+      <div id="pz-done" hidden><div class="done">REDEEMED</div><p id="pz-done-at"></p></div>
+    </div>
+    <button class="btn" id="redeem-go">Mark as Redeemed</button>
+    <p class="small" style="margin-top:14px;text-align:center" id="visits2"></p>
+  </section>
+</main>
+<div id="toast"></div>
+
+<script src="config.js"></script>
+<script>
+let creds = JSON.parse(localStorage.getItem('kb_creds') || 'null');
+let prizes = [], st = null, rot = 0, spinning = false, mode = 'login', tick = null;
+const fmt = (o) => new Intl.DateTimeFormat('en-PH', { timeZone: 'Asia/Manila', ...o });
+const call = (fn, extra) => rpc(fn, { p_user: creds.u, p_pin: creds.p, ...extra });
+const show = id => { document.querySelectorAll('.screen').forEach(e => e.hidden = e.id !== id); $('#logout').hidden = id === 's-auth'; };
+
+function logout() { localStorage.removeItem('kb_creds'); creds = null; clearInterval(tick); show('s-auth'); }
+$('#logout').onclick = logout;
+
+// ---- auth ----
+document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
+  mode = b.dataset.mode;
+  document.querySelectorAll('.tabs button').forEach(x => x.classList.toggle('on', x === b));
+  $('#auth-go').textContent = mode === 'login' ? 'Log in' : 'Create account';
+  $('#auth-err').textContent = '';
+});
+$('#auth-go').onclick = async () => {
+  const u = $('#u').value.trim(), p = $('#p').value;
+  $('#auth-err').textContent = '';
+  if (!u || !/^\d{4}$/.test(p)) { $('#auth-err').textContent = 'Enter a username and a 4-digit PIN.'; return; }
+  $('#auth-go').disabled = true;
+  const r = mode === 'login' ? await rpc('get_status', { p_user: u, p_pin: p }) : await rpc('signup', { p_user: u, p_pin: p });
+  $('#auth-go').disabled = false;
+  if (r.error) { $('#auth-err').textContent = r.error; return; }
+  creds = { u: r.username, p }; localStorage.setItem('kb_creds', JSON.stringify(creds));
+  $('#p').value = ''; route(r);
+};
+
+// ---- routing ----
+async function route(s) {
+  if (!creds) return show('s-auth');
+  if (!s) { s = await call('get_status'); if (s.error) { logout(); toast(s.error); return; } }
+  st = s;
+  const v = `${s.visits} visit${s.visits === 1 ? '' : 's'} so far`;
+  $('#who1').textContent = s.username; $('#visits1').textContent = v; $('#visits2').textContent = v;
+  if (!s.today.checked_in) { show('s-code'); $('#code').value = ''; }
+  else if (!s.today.prize) { await loadWheel(); show('s-wheel'); }
+  else showPrize();
+}
+
+// ---- check-in ----
+$('#code-go').onclick = async () => {
+  const c = $('#code').value; $('#code-err').textContent = '';
+  if (!/^\d{4}$/.test(c)) { $('#code-err').textContent = 'The code is 4 digits.'; return; }
+  $('#code-go').disabled = true;
+  const r = await call('checkin', { p_code: c });
+  $('#code-go').disabled = false;
+  if (r.error) { $('#code-err').textContent = r.error; return; }
+  route(r);
+};
+
+// ---- wheel ----
+async function loadWheel() {
+  if (!prizes.length) { const r = await rpc('get_prizes'); if (r.error) { toast(r.error); return; } prizes = r; }
+  drawWheel();
+}
+function inkFor(hex) { const n = parseInt(hex.slice(1), 16), l = .299 * (n >> 16) + .587 * (n >> 8 & 255) + .114 * (n & 255); return l > 140 ? '#10251f' : '#fff'; }
+function drawWheel() {
+  const c = $('#wheel'), x = c.getContext('2d'), S = c.width, R = S / 2, n = prizes.length, seg = 2 * Math.PI / n;
+  x.clearRect(0, 0, S, S);
+  prizes.forEach((p, i) => {
+    const a = -Math.PI / 2 + i * seg;
+    x.beginPath(); x.moveTo(R, R); x.arc(R, R, R - 4, a, a + seg); x.closePath();
+    x.fillStyle = p.color; x.fill(); x.strokeStyle = '#0f2f2a'; x.lineWidth = 5; x.stroke();
+    x.save(); x.translate(R, R); x.rotate(a + seg / 2);
+    x.textAlign = 'right'; x.fillStyle = inkFor(p.color); x.font = '800 40px "Bricolage Grotesque", sans-serif';
+    x.fillText(p.label, R - 44, 14); x.restore();
+  });
+}
+$('#spin-go').onclick = async () => {
+  if (spinning) return; spinning = true; $('#spin-go').disabled = true;
+  const r = await call('spin');
+  if (r.error) { toast(r.error); spinning = false; $('#spin-go').disabled = false; if (/already|Daily Code/.test(r.error)) route(); return; }
+  const i = prizes.findIndex(p => p.id === r.prize_id), seg = 360 / prizes.length;
+  const target = -(i + .5) * seg + (Math.random() - .5) * seg * .6;
+  const cur = ((rot % 360) + 360) % 360, delta = (((target - cur) % 360) + 360) % 360;
+  rot += 360 * 6 + delta;
+  $('#wheel').style.transform = `rotate(${rot}deg)`;
+  setTimeout(() => { spinning = false; $('#spin-go').disabled = false; st = r; showPrize(); }, 5400);
+};
+
+// ---- prize + live clock ----
+function showPrize() {
+  const t = st.today; show('s-prize'); clearInterval(tick);
+  $('#pz-name').textContent = t.prize;
+  if (!t.is_win) {
+    $('#pz-top').textContent = 'Not this time';
+    $('#pz-sub').textContent = 'You’ve used today’s spin. Come back tomorrow and try again!';
+    $('#pz-live').hidden = true; $('#pz-done').hidden = true; $('#redeem-go').hidden = true; return;
+  }
+  $('#pz-top').textContent = 'You won';
+  $('#redeem-go').hidden = t.redeemed;
+  if (t.redeemed) {
+    $('#pz-sub').textContent = st.username;
+    $('#pz-live').hidden = true; $('#pz-done').hidden = false;
+    $('#pz-done-at').textContent = 'Claimed ' + fmt({ dateStyle: 'medium', timeStyle: 'medium' }).format(new Date(t.redeemed_at));
+    return;
+  }
+  $('#pz-sub').textContent = `Show this screen to the cashier, ${st.username}.`;
+  $('#pz-live').hidden = false; $('#pz-done').hidden = true;
+  const upd = () => {
+    const d = new Date();
+    $('#clk').textContent = fmt({ hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true }).format(d);
+    $('#clk-date').textContent = fmt({ weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }).format(d);
+  };
+  upd(); tick = setInterval(upd, 1000);
+}
+$('#redeem-go').onclick = async () => {
+  if (!confirm('Cashier only: mark this prize as redeemed? This can’t be undone.')) return;
+  const r = await call('redeem');
+  if (r.error) { toast(r.error); return; }
+  st = r; showPrize();
+};
+
+route();
+</script>
+</body>
+</html>

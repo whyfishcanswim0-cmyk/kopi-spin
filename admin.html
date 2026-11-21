@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>Kopi Breyk Admin</title>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,700;12..96,800&family=Figtree:wght@400;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main class="wide">
+  <div class="brand"><span>Kopi Breyk admin</span><button id="out" hidden>Log out</button></div>
+
+  <section id="login">
+    <h2>Admin login</h2>
+    <label for="pw">Password</label>
+    <input id="pw" type="password" autocomplete="current-password">
+    <p class="err" id="lerr"></p>
+    <button class="btn" id="go" style="max-width:300px">Log in</button>
+  </section>
+
+  <section id="panel" hidden>
+    <h2>Cafe Daily Code</h2>
+    <div class="row">
+      <div><label for="code">Today’s code (4 digits)</label><input id="code" class="pin" inputmode="numeric" maxlength="4"></div>
+      <button class="btn ghost" id="rand">Random</button>
+      <button class="btn" id="save">Save code</button>
+    </div>
+    <h2 style="margin-top:34px">Customers <span class="small" id="count"></span></h2>
+    <input id="q" placeholder="Search username">
+    <p class="small" style="margin-top:10px">Date colors: green = won a prize, gold = prize redeemed, grey = no prize.</p>
+    <div class="scroll"><table><thead><tr><th>Username</th><th>Visits</th><th>Dates visited</th></tr></thead><tbody id="rows"></tbody></table></div>
+  </section>
+</main>
+<div id="toast"></div>
+<script src="config.js"></script>
+<script>
+let pw = sessionStorage.getItem('kb_admin') || '', players = [];
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+async function load(first) {
+  const r = await rpc('admin_list', { p_pw: pw });
+  if (r.error) { if (first) { sessionStorage.removeItem('kb_admin'); } $('#lerr').textContent = first ? '' : r.error; if (!first) toast(r.error); return false; }
+  players = r.players; $('#code').value = r.code;
+  $('#login').hidden = true; $('#panel').hidden = false; $('#out').hidden = false; render(); return true;
+}
+function render() {
+  const q = $('#q').value.trim().toLowerCase(), list = players.filter(p => p.username.toLowerCase().includes(q));
+  $('#count').textContent = `(${players.length})`;
+  $('#rows').innerHTML = list.map(p => `<tr><td><b>${esc(p.username)}</b></td><td>${p.visits}</td><td>${
+    p.dates.map(d => `<span class="chip ${d.redeemed ? 'red' : d.prize && d.prize !== 'Try Again' ? 'won' : ''}" title="${esc(d.prize || 'No spin yet')}">${d.d}</span>`).join('')}</td></tr>`).join('')
+    || '<tr><td colspan="3">No customers yet.</td></tr>';
+}
+$('#go').onclick = async () => {
+  pw = $('#pw').value; $('#lerr').textContent = '';
+  const r = await rpc('admin_list', { p_pw: pw });
+  if (r.error) { $('#lerr').textContent = r.error; return; }
+  sessionStorage.setItem('kb_admin', pw); load(false);
+};
+$('#pw').onkeydown = e => { if (e.key === 'Enter') $('#go').click(); };
+$('#q').oninput = render;
+$('#rand').onclick = () => { $('#code').value = String(Math.floor(Math.random() * 10000)).padStart(4, '0'); };
+$('#save').onclick = async () => {
+  const r = await rpc('admin_set_code', { p_pw: pw, p_code: $('#code').value });
+  toast(r.error || 'Daily code saved: ' + r.code);
+};
+$('#out').onclick = () => { sessionStorage.removeItem('kb_admin'); location.reload(); };
+if (pw) load(true);
+</script>
+</body>
+</html>
